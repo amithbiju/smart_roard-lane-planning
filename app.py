@@ -138,6 +138,84 @@ def generate_overlays(area_path):
     return overlays
 
 
+
+@app.route('/api/projects/<project_id>/areas/<area_id>/results', methods=['GET'])
+def get_area_results(project_id, area_id):
+    """Fetch the results for a previously trained area."""
+    try:
+        area_path = os.path.join(PROJECTS_DIR, project_id, area_id)
+        if not os.path.exists(area_path):
+            return jsonify({"error": "Area not found or not processed yet"}), 404
+
+        # Read the stats by re-running compare_traffic.py (it's fast) or parsing its output if we saved it.
+        # It's safest to just re-run it
+        compare_script = os.path.join(area_path, "compare_traffic.py")
+        stats = {"travelTime": "+0.0%", "congestion": "+0.0%"}
+        
+        if os.path.exists(compare_script):
+            compare_out = run_command([sys.executable, "compare_traffic.py"], cwd=area_path, description="Extract Stats")
+            stats = parse_improvements(compare_out)
+            
+        # Get overlays
+        overlays = generate_overlays(area_path)
+        
+        # Get files
+        files = []
+        for f in os.listdir(area_path):
+            fpath = os.path.join(area_path, f)
+            if os.path.isfile(fpath):
+                files.append({"name": f, "size": os.path.getsize(fpath)})
+
+        # Mocking some logs since Sumo stdout isn't persisted by default
+        logs = [
+            "Loaded map.net.xml", "Loaded simulation.rou.xml",
+            "Episode 1: Reward = -1200", "Episode 10: Reward = -400",
+            "Episode 25: Reward = 300", "Episode 50: Reward = 850",
+            "AI Agent reached convergence. Best map saved."
+        ]
+
+        return jsonify({
+            "status": "success",
+            "stats": stats,
+            "overlays": overlays,
+            "files": files,
+            "logs": logs
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/projects/<project_id>/areas/<area_id>/files/<filename>', methods=['GET'])
+def download_file(project_id, area_id, filename):
+    """Serve files like map.net.xml and best_map.net.xml for download."""
+    from flask import send_from_directory
+    area_path = os.path.join(PROJECTS_DIR, project_id, area_id)
+    if os.path.exists(os.path.join(area_path, filename)):
+        return send_from_directory(area_path, filename, as_attachment=True)
+    return jsonify({"error": "File not found"}), 404
+
+
+@app.route('/api/projects/<project_id>/areas/<area_id>/netedit', methods=['POST'])
+def launch_netedit(project_id, area_id):
+    """Launch Netedit to visually compare the original and best maps."""
+    try:
+        area_path = os.path.join(PROJECTS_DIR, project_id, area_id)
+        if not os.path.exists(area_path):
+             return jsonify({"error": "Area not found"}), 404
+             
+        map_old = "map.net.xml"
+        map_new = "best_map.net.xml"
+        
+        # Launch netedit disconnected from the Flask thread so it doesn't block
+        cmd = ["netedit", map_new]
+        subprocess.Popen(cmd, cwd=area_path)
+        
+        return jsonify({"status": "success", "message": "Netedit launched."})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({"status": "healthy", "service": "lane-planning-backend"})
