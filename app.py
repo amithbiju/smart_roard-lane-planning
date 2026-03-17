@@ -7,6 +7,7 @@ import shutil
 import time
 import requests
 import xml.etree.ElementTree as ET
+import csv
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
@@ -166,6 +167,15 @@ def get_area_results(project_id, area_id):
             if os.path.isfile(fpath):
                 files.append({"name": f, "size": os.path.getsize(fpath)})
 
+        # Read construction logs
+        construction_logs = []
+        log_csv = os.path.join(area_path, "construction_log.csv")
+        if os.path.exists(log_csv):
+            with open(log_csv, "r") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    construction_logs.append(row)
+
         # Mocking some logs since Sumo stdout isn't persisted by default
         logs = [
             "Loaded map.net.xml", "Loaded simulation.rou.xml",
@@ -179,7 +189,8 @@ def get_area_results(project_id, area_id):
             "stats": stats,
             "overlays": overlays,
             "files": files,
-            "logs": logs
+            "logs": logs,
+            "construction_logs": construction_logs
         })
     except Exception as e:
         traceback.print_exc()
@@ -204,14 +215,16 @@ def launch_netedit(project_id, area_id):
         if not os.path.exists(area_path):
              return jsonify({"error": "Area not found"}), 404
              
-        map_old = "map.net.xml"
-        map_new = "best_map.net.xml"
+        data = request.json or {}
+        map_type = data.get('mapType', 'optimized')
+        
+        map_file = "map.net.xml" if map_type == 'original' else "best_map.net.xml"
         
         # Launch netedit disconnected from the Flask thread so it doesn't block
-        cmd = ["netedit", map_new]
+        cmd = ["netedit", map_file]
         subprocess.Popen(cmd, cwd=area_path)
         
-        return jsonify({"status": "success", "message": "Netedit launched."})
+        return jsonify({"status": "success", "message": f"Netedit launched for {map_type} map."})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
@@ -238,6 +251,13 @@ def plan_lanes():
         project_path = os.path.join(PROJECTS_DIR, project_id)
         area_path = os.path.join(project_path, safe_area_id)
         os.makedirs(area_path, exist_ok=True)
+        
+        # Save custom simulation parameters
+        params = data.get('params', {})
+        if params:
+            import json
+            with open(os.path.join(area_path, 'config.json'), 'w') as f:
+                json.dump(params, f)
         
         # Step 0: Download OSM and convert to net
         osm_path = os.path.join(area_path, "map.osm")
